@@ -1,0 +1,15 @@
+[Unit]
+Description=Expert Listing API (legacy server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/opt/expertlisting/api
+EnvironmentFile=/etc/expertlisting.env
+EnvironmentFile=-/etc/expertlisting-version.env
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Expert Listing database migrations (legacy server, one-shot)
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/expertlisting/api
+EnvironmentFile=/etc/expertlisting.env
+ExecStart=/usr/bin/node migrate.js

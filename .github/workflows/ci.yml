@@ -1,0 +1,35 @@
+# Runs on every pull request that touches the app. No AWS access needed.
+name: ci
+
+on:
+  pull_request:
+    paths:
+      - "api/**"
+      - "web/**"
+      - ".github/workflows/ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build images (not pushed)
+        run: |
+          docker build --build-arg APP_VERSION=${{ github.sha }} -t api:pr ./api
+          docker build --build-arg APP_VERSION=${{ github.sha }} -t web:pr ./web

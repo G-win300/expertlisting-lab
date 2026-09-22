@@ -1,0 +1,101 @@
+# Build once, promote the same image: test -> build -> staging -> (approval) -> prod.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "api/**"
+      - "web/**"
+      - "scripts/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # lets the job request a GitHub OIDC token to assume an AWS role
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push images tagged with the commit SHA
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          for svc in api web; do
+            IMAGE="${REGISTRY}/expertlisting/${svc}:${IMAGE_TAG}"
+            # Tags are immutable, so a re-run (e.g. a rollback) reuses the existing image.
+            if aws ecr describe-images --repository-name "expertlisting/${svc}" \
+                 --image-ids imageTag="${IMAGE_TAG}" >/dev/null 2>&1; then
+              echo "${IMAGE} already exists, skipping build"
+              continue
+            fi
+            docker build --build-arg APP_VERSION="${IMAGE_TAG}" -t "${IMAGE}" "./${svc}"
+            docker push "${IMAGE}"
+          done
+
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.${{ vars.LAB_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Migrate and roll out
+        run: ./scripts/ecs-deploy.sh staging "${IMAGE_TAG}"
+      - name: Smoke test
+        run: ./scripts/smoke-test.sh "staging.${{ vars.LAB_DOMAIN }}" "${IMAGE_TAG}"
+
+  deploy-prod:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment:
+      name: production   # required reviewers on this environment = the manual approval gate
+      url: https://app.${{ vars.LAB_DOMAIN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Migrate and roll out
+        run: ./scripts/ecs-deploy.sh prod "${IMAGE_TAG}"
+      - name: Smoke test
+        run: ./scripts/smoke-test.sh "app.${{ vars.LAB_DOMAIN }}" "${IMAGE_TAG}"
